@@ -1,0 +1,125 @@
+# Import required modules
+from bayesian_hdx_v2 import scoring, sampling, system, model, hxio, tools, data
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+import numpy as np
+import multiprocessing
+from copy import deepcopy
+import random
+
+
+# Define function to run simulation
+def run_simulation(single_dataset, sequence, state_name, outputdir, run_index=1):
+    
+    tools.refine_dataset(single_dataset)
+
+    # Initialize model and system
+    num_exp_bins = 40
+    sys = system.System(output_dir=outputdir, noclobber=False)
+    mol = sys.add_macromolecule(sequence, state_name, initialize_apo=False)
+
+    # Add state and scoring function
+    state = mol.add_state(f"{{state_name}}_{{run_index}}")
+    state.scoring_function = scoring.ScoringFunction(scoring.GaussianNoiseModelIsotope(state, truncated=False))
+
+    # priors
+
+    # Add data to molecule state
+    state.add_dataset(single_dataset)
+    sys.output.write_datasets()
+
+    # Set up the output model
+    output_model = model.ResidueGridModel(state, grid_size=num_exp_bins)
+    state.set_output_model(output_model)
+
+    # Initialize sampler
+    #sampler = sampling.MCSampler(sys, pct_moves=20, if_sample_centroid_sigma=True, if_sample_envelope_sigma=True)
+    sampler = sampling.MCSampler(sys, pct_moves=20)
+    sys.output.initialize_output_model_file(state, output_model.pf_grids)
+
+    # Run sampling
+    annealing_steps = 100 
+    for i in range(5):
+        # centroid only
+        state.scoring_function = scoring.ScoringFunction(scoring.GaussianNoiseModelIsotope(state, truncated=False, w_envelope=0.0, w_centroid=1.0))
+        newscore = state.calculate_peptides_score(state.get_all_peptides(), state.output_model.get_current_model())
+        state.set_score(newscore)
+        sampler.run(annealing_steps, 50, find_temperature=False)
+        sampler.run(annealing_steps, 20, find_temperature=False)
+        sampler.run(annealing_steps, 10, find_temperature=False)
+        sampler.run(annealing_steps, 2,find_temperature=False)
+
+        # centroid plus envelope
+        state.scoring_function = scoring.ScoringFunction(scoring.GaussianNoiseModelIsotope(state, truncated=False, envelope_sigma=0.3, w_envelope=1.0, w_centroid=1.0))
+        newscore = state.calculate_peptides_score(state.get_all_peptides(), state.output_model.get_current_model())
+        state.set_score(newscore)
+        sampler.run(annealing_steps*2, 50, find_temperature=True, acceptance_range=(0.4, 0.8))
+        sampler.run(annealing_steps*2, 2, find_temperature=True, acceptance_range=(0.2, 0.4))
+        sampler.run(annealing_steps, sampler.temperature, write=True, find_temperature=True, acceptance_range=(0.1, 0.3))
+        sampler.run(500, sampler.temperature, write=True, find_temperature=False)
+        sampler.run(500, 0, write=True, find_temperature=False)
+
+def main():
+    # Define protein state and sequence
+    protein_state = '{protein_state}'
+    sequence = "{sequence}"
+
+    # Define experiment names and input file paths
+    exp_names = {exp_names}
+    infile_list = [f"{base_directory}/bayesian_hdx_{{exp}}_{{protein_state}}.dat" for exp in exp_names]
+
+    # conditions
+    conditions = data.Conditions(temperature={temperature}, pH={pH}, saturation={saturation})
+
+    # Process datasets
+    dataset_list = []
+    for i, infile in enumerate(infile_list):
+        try:
+            dataset = hxio.import_HXcolumns(infile, sequence, name=f"{{protein_state}}", percentD=False, conditions=conditions, error_estimate=0.5, n_fastamides=2, offset=0)
+        except:
+            print(f"{{infile}} not found. Skipping...")
+            continue
+        raw_spectra_path = f"{base_directory}/spectra_{{exp_names[i]}}/"
+        hxio.load_raw_ms_from_pegion(dataset, raw_spectra_path)
+        dataset_list.append(dataset)
+
+    # Merge datasets
+    merged_dataset = data.merge_mutiple_datasets(dataset_list)
+    tools.refine_dataset(merged_dataset)
+
+    # Initialize model and system
+    state_name = f"{protein_state}"
+    outputdir = f"{base_directory}/bayesian_hdx_output_chunks"
+
+    tasks_all = []
+    for run_index in range(1, {rerun_num}+1):
+        merged_dataset_90 = deepcopy(merged_dataset)
+        merged_dataset_90.peptides = random.sample(merged_dataset.peptides, int(0.9*len(merged_dataset.peptides)))
+        
+        # Split dataset into chunks
+        range_chunks, chunked_datasets = data.spilt_dataset_into_chunks(merged_dataset_90, chunk_size={chunk_size})
+
+        # Prepare a list of arguments for each task
+        tasks = [(chunked_datasets[i], sequence, f'{{state_name}}_chunk_{{i}}', outputdir, run_index) for i in range(len(chunked_datasets))]
+        tasks_all.append(tasks)
+        
+
+    tasks_all = [item for sublist in tasks_all for item in sublist]
+
+    # Run tasks in parallel
+    pool = multiprocessing.Pool(processes=len(tasks_all))
+
+
+    # Run tasks
+    pool.starmap(run_simulation, tasks_all)
+
+    # Close the pool and wait for all tasks to complete
+    pool.close()
+    pool.join()
+
+
+if __name__ == "__main__":
+    multiprocessing.freeze_support()
+    main()
+    
