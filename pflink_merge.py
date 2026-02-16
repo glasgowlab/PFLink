@@ -7,13 +7,12 @@ import os
 from HXMS_IO import HxmsData
 from Helper_Functions import combine_hxms_data
 from Parsers import validate_and_parse_hxms_file
-import tempfile
-# ANSI escape codes for colors
+
+
 RED = "\033[91m"
 RESET = "\033[0m"
 
 def main():
-    # Set up the command-line argument parser with the custom formatter
 
 
     parser = argparse.ArgumentParser(
@@ -24,8 +23,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Process raw H/D exchange mass spectrometry data into HXMS file format.")
 
-    
-    #I/O and File Arguments
+
     parser.add_argument("--input_hxms_path1", type=str, required=True,
                         help="Path to the file1 containing the.hmxs data")
     parser.add_argument("--input_hxms_path2", type=str, required=True,
@@ -34,11 +32,11 @@ def main():
                         help="Path to the output directory where the final .hxms files will be saved.")
     
     args = parser.parse_args()
-    # Construct the full paths from the parsed arguments
+
     INPUT_PATH1 = args.input_hxms_path1
     INPUT_PATH2 = args.input_hxms_path1
     OUTPUT_PATH = args.output_hxms_path
-    # Path Validations for input files
+
     if not os.path.isfile(INPUT_PATH1):
         print(f"{RED}Error: Your input path '{INPUT_PATH1}' does not exist or is not a file! Please correct it and run again.{RESET}")
         sys.exit(1)

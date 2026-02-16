@@ -5,39 +5,29 @@ from typing import Dict, Optional, Any
 
 
 class HxmsData:
-    """
-    A class to store and structure data from HDX-MS experiments.
-    """
     def __init__(self):
-        # List of proteins found in the data
         self.proteins = []
-        # Dictionary to store states for each protein
         self.state = {}
-        # Dictionary to store peptide data, nested by protein and state
         self.peptides = {}
-        # Dictionary for metadata, to be populated from the file or flags
+        self.match = None
         self.metadata = {
             'protein_sequence': "",
             'protein_name': "",
             'protein_state': "",
             'temperature': "",
             'ph': "",
-            'saturation': ""
+            'saturation': "",
+            'file_type': ""
         }
 
 
 
-def write_hxms_file(hxms_data: HxmsData, output_path: str, flags: Optional[Dict[str, Any]] = None,protein_state_rename:str = None, protein_name_rename:str = None,peptide_list_parsed=None,include_exclude_bool=True,replicate_ID: int = None,bimodel_group: str = None,over_ride_save=None) -> bool:
-    """
-    Writes the data from the HxmsData object to one or more .hxms files,
-    based on the protein and state.
-    """
-    from Helper_Functions import _sort_hxms_data, _get_avg_zero_uptake
-    hxms_data = _sort_hxms_data(hxms_data)
+def write_hxms_file(hxms_data: HxmsData, output_path: str, flags: Optional[Dict[str, Any]] = None,protein_state_rename:str = None, protein_name_rename:str = None,peptide_list_parsed=None,include_exclude_bool=True,replicate_ID: int = None,bimodel_group: str = None,over_ride_save=None, save_match=False, save_fine_match=False) -> bool:
+    from Helper_Functions import _sort_hxms_data_cc, _get_avg_zero_uptake
+    hxms_data = _sort_hxms_data_cc(hxms_data)
 
     metadata = hxms_data.metadata
 
-    # Use flags to pre-populate metadata if available
     if flags:
         if not isinstance(flags['protein_sequence'], list):
             metadata['protein_sequence'] = flags.get('protein_sequence', "")
@@ -46,7 +36,6 @@ def write_hxms_file(hxms_data: HxmsData, output_path: str, flags: Optional[Dict[
         metadata['saturation'] = flags.get('d20_saturation', "")
         metadata['temperature'] = flags.get('temp', "")
 
-    # Logic to handle multiple proteins/states from flags
     protein_states_to_process = []
     if flags and flags.get('protein_name_states'):
         protein_name_states = flags['protein_name_states']
@@ -67,33 +56,21 @@ def write_hxms_file(hxms_data: HxmsData, output_path: str, flags: Optional[Dict[
 
 
         if isinstance(flags.get('protein_sequence'), list):
-            # Scenario 1: Number of sequences matches the number of proteins (1-to-1 mapping)
             if num_sequences == len(hxms_data.proteins):
                 try:
-                    # Use the current index to map a sequence to the current protein
                     metadata['protein_sequence'] = flags['protein_sequence'][index]
                 except IndexError:
-                    # Fallback to the last one (safety, though logic should prevent this)
                     metadata['protein_sequence'] = flags['protein_sequence'][-1]
-
-            # Scenario 2: Only one sequence is provided (use it for all proteins)
             elif num_sequences == 1:
-                # Use the first (and only) sequence provided
                 metadata['protein_sequence'] = flags['protein_sequence'][0]
 
-            # Scenario 3: Otherwise (e.g., 2 sequences for 3 proteins, or 0)
             else:
                 try:
                     metadata['protein_sequence'] = flags['protein_sequence'][index]
                 except:
                     metadata['protein_sequence'] = flags['protein_sequence'][-1]
-
-
-        # If protein_sequence is a single string (not a list), use it for all proteins.
         elif isinstance(flags.get('protein_sequence'), str):
             metadata['protein_sequence'] = flags['protein_sequence']
-
-        # If no protein_sequence flag was set or it's an unsupported type, use an empty string.
         else:
             metadata['protein_sequence'] = ""
 
@@ -141,13 +118,14 @@ def write_hxms_file(hxms_data: HxmsData, output_path: str, flags: Optional[Dict[
 
                 tp_lines = []
                 index = 0
+                match_lines = []
                 if protein in hxms_data.peptides and state in hxms_data.peptides[protein]:
                     for peptide_name in hxms_data.peptides[protein][state]:
                         if peptide_list_parsed is not None:
                             # peptide_name = f"{row['start']}-{peptide}-{modification}-{row['end']}-{replicate}"
-                            start = peptide_name.split("-")[0]
-                            end = peptide_name.split("-")[3]
-                            key = start + "-" + end
+                            start = peptide_name.split("~")[0]
+                            end = peptide_name.split("~")[3]
+                            key = start + "~" + end
                             if include_exclude_bool: #Include
                                 if key not in peptide_list_parsed:
                                     continue
@@ -155,53 +133,83 @@ def write_hxms_file(hxms_data: HxmsData, output_path: str, flags: Optional[Dict[
                                 if key in peptide_list_parsed:
                                     continue
 
-                        PTM_name = peptide_name.split("-")[2]
+                        PTM_name = peptide_name.split("~")[2]
                         if PTM_name == "N/A":
                             PTM_name = "nan"
                         if PTM_name not in PTM_dic:
-                            PTM_dic[PTM_name] = f"0000{len(PTM_dic) - 1}"[-4:]
+                            PTM_dic[PTM_name] = f"0000{len(PTM_dic)}"[-4:]
 
-                        # Check for a timepoint "0" and skip if it doesn't exist.
-                        if "0" not in hxms_data.peptides[protein][state][peptide_name]:
+
+                        if ("0" not in hxms_data.peptides[protein][state][peptide_name]) and ("0.0" not in hxms_data.peptides[protein][state][peptide_name]):
                             zero_uptake = _get_avg_zero_uptake(hxms_data, protein, state, peptide_name)
 
                         else:
-                            zero_uptake = hxms_data.peptides[protein][state][peptide_name]["0"]['uptake']
+                            count = 0
+                            zero_uptake = 0
+                            if "0" in hxms_data.peptides[protein][state][peptide_name]:
+                                for x in hxms_data.peptides[protein][state][peptide_name]["0"]:
+                                    count += 1
+                                    zero_uptake += x['uptake']
+                            if "0.0" in hxms_data.peptides[protein][state][peptide_name]:
+                                for x in hxms_data.peptides[protein][state][peptide_name]["0.0"]:
+                                    count += 1
+                                    zero_uptake += x['uptake']
+                            if count != 0:
+                                zero_uptake = zero_uptake/count
 
                         for exposure_key in hxms_data.peptides[protein][state][peptide_name]:
-                            index += 1
-                            tp = hxms_data.peptides[protein][state][peptide_name][exposure_key]
-                            uptake = tp['uptake']
-                            if exposure_key != "0" and zero_uptake is not None:
-                                uptake = tp['uptake'] - zero_uptake
-                            elif exposure_key == "0":
-                                # Zero-time point uptake is always reported as 0
-                                uptake = 0
-                            if replicate_ID:
-                                tp['replicate'] = replicate_ID
-                            if bimodel_group:
-                                tp['mod'] = replicate_ID
+                            for tp in hxms_data.peptides[protein][state][peptide_name][exposure_key]:
+                                index += 1
+                                uptake = tp['uptake']
+                                if ((exposure_key != "0") and (exposure_key != "0.0")) and zero_uptake is not None:
+                                    uptake = tp['uptake'] - zero_uptake
+                                elif (exposure_key == "0") or (exposure_key == "0.0"):
+                                    # Zero-time point uptake is always reported as 0
+                                    uptake = 0
+                                else:
+                                    continue
+                                if replicate_ID:
+                                    tp['replicate'] = replicate_ID
+                                if bimodel_group:
+                                    tp['mod'] = replicate_ID
 
+                                line = (
+                                    f"{'TP':<12}"
+                                    f"{index:<8}"
+                                    f"{tp['mod']:<6}"
+                                    f"{tp['start']:<7}"
+                                    f"{tp['end']:<7}"
+                                    f"{tp['replicate']:<5}"
+                                    f"{PTM_dic[PTM_name]:<8}"
+                                    f"{float(tp['time']):<16.6e}"
+                                    f"{uptake:<9.2f}"
+                                    f"{tp['envelope']}\n"
+                                )
+                                tp_lines.append(line)
+                                
+                                if save_match:
+                                    mact_content = tp['raw_ms_fine_structure'] if save_fine_match else tp['match']
+                                    match_line = (
+                                        f"{'MATCH':<12}"
+                                        f"{index:<8}"
+                                        f"{tp['score']:<8}"
+                                        f"{tp['RT']:<8}"
+                                        f"{tp['charge_state']:<5}"
+                                        f"{tp['mono_mz']:<16}"
+                                        #f"{tp['match']}\n"
+                                        f"{mact_content}\n"
+                                    )
+                                    match_lines.append(match_line)
 
-                            line = (
-                                f"{'TP':<12}"
-                                f"{index:<8}"
-                                f"{tp['mod']:<6}"
-                                f"{tp['start']:<7}"
-                                f"{tp['end']:<7}"
-                                f"{tp['replicate']:<5}"
-                                f"{PTM_dic[PTM_name]:<8}"
-                                f"{tp['time']:<16.6e}"
-                                f"{uptake:<9.2f}"
-                                f"{tp['envelope']}\n"
-                            )
-                            tp_lines.append(line)
-
-                col_title_PTM = 'TITLE_PTM  PTM_ID  CONTENT\n'
+                col_title_PTM = 'TITLE_PTM   PTM_ID  CONTENT\n'
+                col_title_match = 'TITLE_MATCH TP_ID   CONF    RT(min) Z    MONO_M          M/Z\n'
                 PTM_lines = []
                 for PTM in PTM_dic:
                     line = f"{'PTM':<12}{PTM_dic[PTM]:<8}{PTM}\n"
                     PTM_lines.append(line)
+                    
+
+                    
                 if over_ride_save:
                     with open(f'{output_path}/{protein}_{state}.hxms', 'w') as f:
                         f.write(header)
@@ -209,6 +217,9 @@ def write_hxms_file(hxms_data: HxmsData, output_path: str, flags: Optional[Dict[
                         f.writelines(tp_lines)
                         f.write(col_title_PTM)
                         f.writelines(PTM_lines)
+                        if save_match:
+                            f.write(col_title_match)
+                            f.writelines(match_lines)
                     if len(tp_lines) < 3:
                         return False
 
@@ -220,35 +231,28 @@ def write_hxms_file(hxms_data: HxmsData, output_path: str, flags: Optional[Dict[
                         f.writelines(tp_lines)
                         f.write(col_title_PTM)
                         f.writelines(PTM_lines)
+                        if save_match or save_fine_match:
+                            f.write(col_title_match)
+                            f.writelines(match_lines)
                     if len(tp_lines) < 3:
                         return False
     return True
 
 
 def write_hxms_file_combined_test(hxms_data: HxmsData, output_path: str, ) -> bool:
-    """
-    Writes the data from the HxmsData object to one or more .hxms files,
-    sorting the output lines by START -> END -> REPLICATE -> TIME.
-    """
-    # from Helper_Functions import _sort_hxms_data, _get_avg_zero_uptake # Assuming available
 
     metadata = hxms_data.metadata
     files_written = 0
-
-    # --------------------------------------------------------------------------
-    # Outer loops for Protein and State (defines the file content and name)
-    # --------------------------------------------------------------------------
     for protein in hxms_data.proteins:
         if protein in hxms_data.state:
             for state in hxms_data.state[protein]:
 
-                # --- File Setup ---
                 metadata['protein_name'] = protein
                 metadata['protein_state'] = state
                 PTM_dic = {"nan": "0000"}
-
-                # List to store (sort_key, formatted_line_string) tuples
                 sortable_tp_lines = []
+                sortable_match_lines = []
+                has_match_data = False
 
                 header = (
                     f"HEADER       HX/MS DATA FORMAT v1.0 {datetime.now().strftime('%Y-%m-%d')}\n"
@@ -273,31 +277,24 @@ def write_hxms_file_combined_test(hxms_data: HxmsData, output_path: str, ) -> bo
                     f"ENVELOPE\n"
                 )
 
-                # --- Data Gathering and Formatting ---
                 if protein in hxms_data.peptides and state in hxms_data.peptides[protein]:
-                    # Initialize index outside, as it's a global counter for TP lines
                     index = 0
-
-                    # Iterate through the data structure in its current order
                     for peptide_name in hxms_data.peptides[protein][state]:
 
-                        # PTM Logic (remains the same)
-                        PTM_name = peptide_name.split("-")[2]
+                        PTM_name = peptide_name.split("~")[2]
                         if PTM_name == "N/A":
                             PTM_name = "nan"
                         if PTM_name not in PTM_dic:
-                            PTM_dic[PTM_name] = f"{(len(PTM_dic) - 1):04d}"  # Cleaner format
+                            PTM_dic[PTM_name] = f"0000{len(PTM_dic)}"[-4:]
 
                         for exposure_key in hxms_data.peptides[protein][state][peptide_name]:
+
                             for tp in hxms_data.peptides[protein][state][peptide_name][exposure_key]:
                                 index += 1
                                 uptake = tp['uptake']
 
-                                # Handle 'inf' time formatting separately from scientific notation
                                 time_val = tp['time']
                                 time_str = 'inf' if time_val == float('inf') else f"{time_val:.6e}"
-
-                                # Create the formatted line string
                                 line = (
                                     f"{'TP':<12}"
                                     f"{index:<8}"
@@ -306,48 +303,63 @@ def write_hxms_file_combined_test(hxms_data: HxmsData, output_path: str, ) -> bo
                                     f"{tp['end']:<7}"
                                     f"{tp['replicate']:<5}"
                                     f"{PTM_dic[PTM_name]:<8}"
-                                    f"{time_str:<16}"
+                                    f"{float(tp['time']):<16.6e}"
                                     f"{uptake:<9.2f}"
                                     f"{tp['envelope']}\n"
                                 )
 
-                                # Create the sort key tuple: (START, END, REPLICATE, TIME)
                                 sort_key = (
                                     tp['start'],
                                     tp['end'],
                                     tp['replicate'],
-                                    # Use float('inf') for sorting if time is 'inf'
                                     time_val if time_val != 'inf' else float('inf')
                                 )
 
-                                # Store the key and the line together
                                 sortable_tp_lines.append((sort_key, line))
+                                
+                                if 'match' in tp and tp['match']:
+                                    has_match_data = True
+                                    rt_val = tp.get('RT', '')
+                                    charge_val = tp.get('charge_state', '')
+                                    mono_mz_val = tp.get('mono_mz', '')
+                                    score = tp.get('score', '')
+                                    match_content = tp.get('raw_ms_fine_structure', tp['match'])
+                                    
+                                    match_line = (
+                                        f"{'MATCH':<12}"
+                                        f"{index:<8}"
+                                        f"{score:<8}"
+                                        f"{rt_val:<8}"
+                                        f"{charge_val:<5}"
+                                        f"{mono_mz_val:<16}"
+                                        f"{match_content}\n"
+                                    )
+                                    sortable_match_lines.append((sort_key, match_line))
 
-                # --- Sorting and Final Line Assembly ---
-
-                # Sort the list based on the sort_key (index 0 of the tuple)
                 sortable_tp_lines.sort(key=lambda item: item[0])
-
-                # Extract only the final formatted line strings
                 final_tp_lines = [item[1] for item in sortable_tp_lines]
+                
+                if has_match_data:
+                    sortable_match_lines.sort(key=lambda item: item[0])
+                    final_match_lines = [item[1] for item in sortable_match_lines]
 
-                # --- PTM Lines ---
                 col_title_PTM = 'TITLE_PTM  PTM_ID  CONTENT\n'
+                col_title_match = 'TITLE_MATCH TP_ID   CONF    RT(min) Z    MONO_M          M/Z\n'
                 PTM_lines = []
                 for PTM in PTM_dic:
                     line = f"{'PTM':<12}{PTM_dic[PTM]:<8}{PTM}\n"
                     PTM_lines.append(line)
-
-                # --- File Writing ---
-                # Consider generating a file name per protein/state if the intention is to write multiple files
                 current_output_path = output_path
 
                 with open(current_output_path, 'w') as f:
                     f.write(header)
                     f.write(col_title_tp)
-                    f.writelines(final_tp_lines)  # Write the sorted lines
+                    f.writelines(final_tp_lines)
                     f.write(col_title_PTM)
                     f.writelines(PTM_lines)
+                    if has_match_data:
+                        f.write(col_title_match)
+                        f.writelines(final_match_lines)
 
                 files_written += 1
                 if len(final_tp_lines) < 3:

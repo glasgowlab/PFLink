@@ -1,32 +1,18 @@
 
 import os
-import ast
-import configparser
 import pandas as pd
-from typing import Dict, List, Optional, Union, Any
+import ast
 import csv
 from HXMS_IO import HxmsData
 from Helper_Functions import validate_protein_sequence, _convert_dformula_to_dict, _create_peptide_chemical_formula, _subtract_chemical_formula_dicts
 
 def _parse_peptide_list(file_path: str) -> list:
-    """
-    Parses a CSV file and extracts a list of peptide ranges.
-
-    Args:
-        file_path (str): The path to the CSV file.
-
-    Returns:
-        list: A list of peptide ranges in "Start-End" format, or None if the file is invalid.
-    """
     if not os.path.exists(file_path) or not os.path.isfile(file_path):
         return None
 
     try:
         peptide_df = pd.read_csv(file_path)
-        # Normalize column names to lowercase for case-insensitivity
         peptide_df.columns = peptide_df.columns.str.lower()
-
-        # Check if the required columns exist after normalization
         if 'start' not in peptide_df.columns or 'end' not in peptide_df.columns:
             return None
 
@@ -34,7 +20,7 @@ def _parse_peptide_list(file_path: str) -> list:
         for _, row in peptide_df.iterrows():
             start = str(row['start']).strip()
             end = str(row['end']).strip()
-            output_peptide_list.append(f"{start}-{end}")
+            output_peptide_list.append(f"{start}~{end}")
 
         return output_peptide_list
     except Exception as e:
@@ -43,122 +29,101 @@ def _parse_peptide_list(file_path: str) -> list:
 
 
 class FlagsParser:
-    """
-    A class to parse a flags file and validate its contents.
-    """
-
     def __init__(self, file_path: str):
         self.file_path = file_path
-        self.config = configparser.ConfigParser(allow_no_value=True)
         self.flags = {}
 
     def _read_flags(self) -> bool:
-        """
-        Reads the flags file, handling missing files.
-        """
         if not os.path.exists(self.file_path) or not os.path.isfile(self.file_path):
             return False
-
         try:
-            with open(self.file_path, 'r') as f:
-                config_string = '[flags]\n' + f.read()
-            self.config.read_string(config_string)
-            self.flags = dict(self.config.items('flags'))
+            with open(self.file_path, 'r') as flags_file:
+                for line in flags_file:
+                    if ":" in line:
+                        key = line.split(":")[0]
+                        value = ast.literal_eval(line.split(":")[1])
+                        self.flags[key] = value
             return True
-        except configparser.Error as e:
+        except:
             return False
 
-    def _validate_and_parse(self) -> Optional[Dict[str, Any]]:
-        """
-        Validates and parses the flags, exiting on error.
-        """
-        validation_rules = {
-            'protein_name_states': {
-                'type': list,
-                'parser': self._parse_list_or_string,  # Must parse the string into a list of lists
-                'validator': lambda x: (
-                        isinstance(x, list) and
-                        all(
-                            isinstance(pair, list) and
-                            len(pair) == 2 and
-                            all(isinstance(s, str) for s in pair)
-                            for pair in x
-                        )
-                )
-            },
-            'protein_sequence': {
-                'type': (list, str),
-                'parser': self._parse_list_or_string,
-                'validator': self._validate_protein_sequence
-            },
-            'ph': {
-                'type': float,
-                'parser': float,
-                'validator': lambda x: isinstance(x, float)
-            },
-            'd20_saturation': {
-                'type': float,
-                'parser': float,
-                'validator': lambda x: 0.0 <= x <= 1.0
-            },
-            'temp': {
-                'type': float,
-                'parser': float,
-                'validator': lambda x: isinstance(x, float)
-            },
-            'file_type': {
-                'type': str,
-                'parser': str,
-                'validator': lambda x: x in ["DynamX", "HDXworkbench", "HDExaminer", "BioPharma", "Byos", "Custom"]
-            }
-        }
+    def _validate_flags_file(self) -> [bool,str]:
+        return_data = [True,""]
+        if len(self.flags) == 0:
+            return_data = [False, "You must have a protein state and name"]
+        for key in self.flags:
+            if key == 'protein_name_states':
+                if not isinstance(self.flags[key], list):
+                    return_data = [False, "protein_name_states must be a list"]
+                    break
+                if len(self.flags[key]) == 0:
+                    return_data = [False, "You must have a protein state and name"]
+                    break
+                for item in self.flags[key]:
+                    if len(item) != 2:
+                        return_data = [False, "You must have a protein state and name for each entry"]
+                        break
+                    if (not isinstance(item[0], str)) or (not isinstance(item[1], str)):
+                        return_data = [False, "The protein name and state must be a string"]
+                        break
 
-        parsed_flags = {}
-        for key, rules in validation_rules.items():
-            value = self.flags.get(key)
-            if value is None or value.strip() == "":
-                parsed_flags[key] = None
-                continue
+            elif key =='protein_sequence':
+                if not isinstance(self.flags[key], list):
+                    return_data = [False, "Protein sequences must be a list"]
+                    break
+                if len(self.flags[key]) == 0:
+                    return_data = [False, "You must have at least one protein sequence"]
+                    break
+                for item in self.flags[key]:
+                    if not isinstance(item, str):
+                        return_data = [False, "The protein sequences must be a string"]
+                        break
+                    if not self._validate_protein_sequence(item):
+                        return_data = [False, "The protein sequences must contain only the 20 native AAs"]
+                        break
+            elif key == 'ph':
+                if not isinstance(self.flags[key], float) and not isinstance(self.flags[key], int):
+                    return_data = [False, "The pH must be a float"]
+                    break
+                if self.flags[key] > 14 or self.flags[key] < 0:
+                    return_data = [False, "The pH must be between 0 and 14"]
+                    break
 
-            try:
-                # Strip comments and quotes before parsing
-                value = value.split('#')[0].strip().strip('"')
+            elif key == 'd20_saturation':
+                if not isinstance(self.flags[key], float) and not isinstance(self.flags[key], int):
+                    return_data = [False, "D20_saturation must be a float"]
+                    break
+                if self.flags[key] > 1.0 or self.flags[key] < 0.0:
+                    return_data = [False, "D20_saturation must be between 0 and 1"]
+                    break
 
-                parsed_value = rules['parser'](value)
-                if not rules['validator'](parsed_value):
-                    raise ValueError(f"Validation failed for '{key}' with value '{value}'.")
-                parsed_flags[key] = parsed_value
-            except (ValueError, SyntaxError) as e:
-                print(f"Error parsing flags file: Invalid value for '{key}'. Details: {e}")
-                raise e
+            elif key == 'temp':
+                if not isinstance(self.flags[key], float) and not isinstance(self.flags[key], int):
+                    return_data = [False, "Temp must be a float or int"]
+                    break
 
-        return parsed_flags
+            elif key == 'file_type':
+                if not isinstance(self.flags[key], str):
+                    return_data = [False, "file_type must be string"]
+                    break
+                if self.flags[key] not in ["DynamX", "HDXworkbench", "HDExaminer", "BioPharma", "Custom"]:
+                    return_data = [False, "file_type must be a supported filed type"]
+                break
+        if not return_data[0]:
+            raise SyntaxError(f"Invalid format {return_data[1]}")
 
-    def _parse_list_or_string(self, value: str) -> Union[List[str], str]:
-        if value.strip().startswith('[') and value.strip().endswith(']'):
-            try:
-                return ast.literal_eval(value)
-            except (ValueError, SyntaxError):
-                raise SyntaxError(f"Invalid list format: {value}")
-        return value
-
-    def _validate_protein_sequence(self, sequences: Union[List[str], str]) -> bool:
+        return return_data
+    def _validate_protein_sequence(self, sequence: str) -> bool:
         allowed_chars = "ACDEFGHIKLMNPQRSTVWY"
-
-        if isinstance(sequences, str):
-            sequences = [sequences]
-
-        for seq in sequences:
-            if not all(c.upper() in allowed_chars for c in seq):
-                return False
+        if not all(c.upper() in allowed_chars for c in sequence):
+            return False
         return True
 
-    def parse(self) -> Optional[Dict[str, Any]]:
+    def parse(self) -> dict:
         if not self._read_flags():
             return None
-
-        return self._validate_and_parse()
-
+        self._validate_flags_file()
+        return self.flags
 
 def _parse_HDXWorkbench(file_path: str, flags_info: None) -> HxmsData:
     """
@@ -187,6 +152,7 @@ def _parse_HDXWorkbench(file_path: str, flags_info: None) -> HxmsData:
                 metadata[key] = value
 
     if flags_info is None:
+        hx_data.metadata['file_type'] = "HDXworkbench"
         for key in metadata:
             if key.lower() == "ph":
                 hx_data.metadata["ph"] = str(metadata[key])
@@ -225,14 +191,17 @@ def _parse_HDXWorkbench(file_path: str, flags_info: None) -> HxmsData:
             dformula_created = _create_peptide_chemical_formula(peptide)
             dformula = _convert_dformula_to_dict(row['dformula'])
             modification = _subtract_chemical_formula_dicts(dformula_created,dformula)
-            print(modification)
             if modification == "":
                 modification = "N/A"
-
+            modification = modification.replace("-", "_")
+            envelope = ""
             replicate = int(row["replicate"]) - 1
-
-            peptide_name = f"{row['start']}-{peptide}-{modification}-{row['end']}-{replicate}"
-
+            if "isotope" in hdxworkbench_df.columns:
+                envelope = row["isotope"]
+                envelope = envelope.replace("NA","0.00")
+                envelope = envelope.replace(":",",")
+            peptide_name = f"{row['start']}~{peptide}~{modification}~{row['end']}~{replicate}"
+            protein = "protein"
             if protein not in hx_data.proteins:
                 hx_data.proteins.append(protein)
                 hx_data.state[protein] = []
@@ -249,18 +218,61 @@ def _parse_HDXWorkbench(file_path: str, flags_info: None) -> HxmsData:
                     exposure = "inf"
                 if str(row["discarded_replicate"]) == "True":
                     continue
-                hx_data.peptides[protein][state][peptide_name][exposure] = {
-                    "uptake": float(row['centroid']) * float(row['charge']),
-                    "start": int(row['start']),
-                    "end": int(row['end']),
-                    "sequence": str(row['peptide']),
-                    "PTM": modification,
-                    "time": float(exposure),
-                    "mod": "A",
-                    "envelope": "",
-                    "replicate": int(row["replicate"]) - 1
-                }
+
+                if exposure not in hx_data.peptides[protein][state][peptide_name]:
+
+                    hx_data.peptides[protein][state][peptide_name][exposure] = [{
+                        "uptake": float(row['centroid']) * float(row['charge']),
+                        "start": int(row['start']),
+                        "end": int(row['end']),
+                        "sequence": str(row['peptide']),
+                        "PTM": modification,
+                        "time": float(exposure),
+                        "mod": "A",
+                        "envelope": envelope,
+                        "replicate": int(row["replicate"]) - 1
+                    }]
+                else:
+                    hx_data.peptides[protein][state][peptide_name][exposure].append({
+                        "uptake": float(row['centroid']) * float(row['charge']),
+                        "start": int(row['start']),
+                        "end": int(row['end']),
+                        "sequence": str(row['peptide']),
+                        "PTM": modification,
+                        "time": float(exposure),
+                        "mod": "A",
+                        "envelope": envelope,
+                        "replicate": int(row["replicate"]) - 1
+                    })
     return hx_data
+
+def _sort_hxms_data_cc(hx_data: HxmsData) -> HxmsData:
+
+    hx_data.proteins.sort()
+    for protein in hx_data.state:
+        hx_data.state[protein].sort()
+
+    for protein in hx_data.peptides:
+        for state in hx_data.peptides[protein]:
+
+            # 'START-SEQ-PTM_ID-END'
+            for _, time_data in hx_data.peptides[protein][state].items():
+                time_data = {sorted(time_data.items(), key=lambda item:item[0])}
+
+                for tp, tp_data in time_data.items():
+                    tp_data = sorted(tp_data, key=lambda i: (i['replicate'],i['time']))
+
+
+            hx_data.peptides[protein][state] = {
+            sorted(
+                hx_data.peptides[protein][state].items(),
+                key=lambda item: (int(item[0].split('~')[0]),int(item[0].split('~')[-1]),item[0].split('~')[2]
+                ))
+            }
+
+
+    return hx_data
+
 
 
 def _parse_HDExaminer(file_path: str, flags_info: None) -> HxmsData:
@@ -271,7 +283,6 @@ def _parse_HDExaminer(file_path: str, flags_info: None) -> HxmsData:
     if not os.path.exists(file_path) or not os.path.isfile(file_path):
         return None
 
-    # Step 1: Parse the header row to get time points and map them
     header_row_index = None
     time_points = []
     with open(file_path, 'r', newline='', encoding='utf-8') as file:
@@ -295,26 +306,21 @@ def _parse_HDExaminer(file_path: str, flags_info: None) -> HxmsData:
                 break
     if header_row_index is not None:
         try:
-            # Step 2: Read the rest of the file into a DataFrame
             hdx_df = pd.read_csv(file_path, skiprows=1)
         except Exception as e:
             print(f"Error reading file: {e}")
             return None
 
-        # Step 3: Identify key columns and map time point data
         hdx_df.columns = hdx_df.columns.str.strip()
 
-        # Check for required headers
         required_headers = ["State", "Protein", "Sequence", "Start", "End", "Charge"]
         for header in required_headers:
             if header not in hdx_df.columns:
                 print(f"Missing required header: {header}")
                 return None
 
-        # Find all columns that contain '#D' for deuteration levels
         d_cols = [col for col in hdx_df.columns if (('#D' in col) and ('right' not in col))]
 
-        # Step 4: Iterate through each row (peptide) and parse data for each time point
         for _, row in hdx_df.iterrows():
             used_rep = {}
             for item in time_points:
@@ -322,7 +328,6 @@ def _parse_HDExaminer(file_path: str, flags_info: None) -> HxmsData:
 
             state = str(row['State']).strip()
             protein = str(row['Protein']).strip()
-            # If protein is empty or 'nan', use a default name
             if not protein or protein == "nan":
                 protein = "protein"
 
@@ -330,8 +335,8 @@ def _parse_HDExaminer(file_path: str, flags_info: None) -> HxmsData:
             start = int(row['Start'])
             end = int(row['End'])
             modification = "N/A"
+            modification = modification.replace("-", "_")
 
-            # Add protein and state to the hx_data object if not present
             if protein not in hx_data.proteins:
                 hx_data.proteins.append(protein)
                 hx_data.state[protein] = []
@@ -340,25 +345,22 @@ def _parse_HDExaminer(file_path: str, flags_info: None) -> HxmsData:
                 hx_data.state[protein].append(state)
                 hx_data.peptides[protein][state] = {}
 
-            # Create a unique key for the peptide
-
-            # Step 5: Iterate through the time point columns
 
             for i, d_col in enumerate(d_cols):
-                # Check if the time point data exists for this row
                 if pd.notna(row[d_col]):
                     time_point_str = time_points[i]
                     time_point = float(time_point_str) if time_point_str != "inf" else float('inf')
                     uptake = float(row[d_col])
                     used_rep[time_point_str]+=1
-                    peptide_name = f"{row['Start']}-{row['Sequence']}-{modification}-{row['End']}-0"
+                    peptide_name = f"{row['Start']}~{row['Sequence']}~{modification}~{row['End']}~0"
                     #peptide_name = f"{row['Start']}-{row['Sequence']}-{modification}-{row['End']}-"
                     #peptide_name = peptide_name+str(used_rep[time_point_str]-1)
                     if peptide_name not in hx_data.peptides[protein][state]:
                         hx_data.peptides[protein][state][peptide_name] = {}
 
-                    if 0.0 not in hx_data.peptides[protein][state][peptide_name]:
-                        hx_data.peptides[protein][state][peptide_name][0.0] = {
+                    if "0.0" not in hx_data.peptides[protein][state][peptide_name]:
+                        hx_data.peptides[protein][state][peptide_name]["0.0"] = [{
+
                             "uptake": 0,
                             "start": start,
                             "end": end,
@@ -369,10 +371,10 @@ def _parse_HDExaminer(file_path: str, flags_info: None) -> HxmsData:
                             "mod": "A",
                             #"replicate": used_rep[time_point_str]-1,
                             "replicate": 0
-                        }
+                        }]
 
                     if time_point not in hx_data.peptides[protein][state][peptide_name]:
-                        hx_data.peptides[protein][state][peptide_name][time_point] = {
+                        hx_data.peptides[protein][state][peptide_name][str(time_point)] = [{
                             "uptake": uptake,
                             "start": start,
                             "end": end,
@@ -383,10 +385,9 @@ def _parse_HDExaminer(file_path: str, flags_info: None) -> HxmsData:
                             "mod": "A",
                             #"replicate": used_rep[time_point_str]-1,
                             "replicate": 0
-                        }
+                        }]
                     else:
-
-                        hx_data.peptides[protein][state][peptide_name][time_point] = {
+                        hx_data.peptides[protein][state][peptide_name][str(time_point)].append({
                             "uptake": uptake,
                             "start": start,
                             "end": end,
@@ -397,7 +398,7 @@ def _parse_HDExaminer(file_path: str, flags_info: None) -> HxmsData:
                             "mod": "A",
                             #"replicate": used_rep[time_point_str]-1,
                             "replicate": 0
-                        }
+                        })
 
     return hx_data
 
@@ -409,7 +410,7 @@ def _parse_custom(file_path: str, flags_info: None) -> HxmsData:
     hx_data = HxmsData()
     if not os.path.exists(file_path) or not os.path.isfile(file_path):
         return None
-    custom_headers = ["Protein","State","Start","Stop","Replicate","Modification","Bimodel_group","Exposure","Uptake","Envelope"]
+    custom_headers = ["Protein","State","Start","Stop","Replicate","Modification","Bimodal_group","Exposure","Uptake","Envelope","RT","Conf","Z","Mono_M","M/Z"]
     try:
         custom_df = pd.read_csv(file_path)
     except Exception as e:
@@ -421,18 +422,38 @@ def _parse_custom(file_path: str, flags_info: None) -> HxmsData:
     for _, row in custom_df.iterrows():
         protein = str(row['Protein'])
         state = str(row['State'])
+        if protein == "" or protein == "nan" or state == "" or state == "nan" or protein is None or state is None:
+            continue
         modification = str(row["Modification"]) if pd.notna(row["Modification"]) else "N/A"
+        modification = modification.replace("-", "_")
         replicate = str(row["Replicate"]) if (pd.notna(row["Replicate"]) and row["Replicate"] != "") else "0"
-        peptide_name = f"{row['Start']}-N/A-{modification}-{row['Stop']}-{replicate}"
+        replicate = int(float(replicate))
+        peptide_name = f"{int(row['Start'])}~N/A~{modification}~{int(row['Stop'])}~{replicate}"
+        rt = float(row["RT"]) if pd.notna(row["RT"]) else None
+        z = float(row["Z"]) if pd.notna(row["Z"]) else None
+        mono_mz = float(row["Mono_M"]) if pd.notna(row["Mono_M"]) else None
+        score = float(row["Conf"]) if pd.notna(row["Conf"]) else None
+        m_z = ""
         envelope = ""
         if row['Envelope'] != "":
-            print(row['Envelope'])
             try:
                 if ";" in row['Envelope']:
                     parts = row['Envelope'].replace("\n","").split(";")
                     if len(parts) > 1:
                         envelope = ",".join(parts)
-                        print(envelope)
+                else:
+                    envelope = str(row['Envelope'])
+            except:
+                pass
+        if row['M/Z'] != "":
+            try:
+                if "|" in row['M/Z']:
+                    parts = row['M/Z'].replace("\n","").split("|")
+                    hx_data.match = True
+                    if len(parts) > 1:
+                        m_z = ",".join(parts)
+                else:
+                    m_z = str(row['M/Z'])
             except:
                 pass
         if protein not in hx_data.proteins:
@@ -444,21 +465,44 @@ def _parse_custom(file_path: str, flags_info: None) -> HxmsData:
             hx_data.peptides[protein][state] = {}
         if peptide_name not in hx_data.peptides[protein][state]:
             hx_data.peptides[protein][state][peptide_name] = {}
+        if str(row["Exposure"]) not in hx_data.peptides[protein][state][peptide_name]:
 
-        hx_data.peptides[protein][state][peptide_name][str(row["Exposure"])] = {
-            "uptake": float(row["Uptake"]),
-            "start": int(row['Start']),
-            "end": int(row['Stop']),
-            "PTM": modification,
-            "time": float(row["Exposure"]),
-            "mod": str(row["Bimodel_group"]) if str(row["Bimodel_group"]) != "" else "A",
-            "envelope": envelope,
-            "replicate": replicate
-        }
+            hx_data.peptides[protein][state][peptide_name][str(row["Exposure"])] = [{
+                "uptake": float(row["Uptake"]),
+                "start": int(row['Start']),
+                "end": int(row['Stop']),
+                "PTM": modification,
+                "time": float(row["Exposure"]),
+                "mod": str(row["Bimodal_group"]) if str(row["Bimodal_group"]) != "" else "A",
+                "envelope": envelope,
+                "replicate": replicate,
+                "match": m_z,
+                "RT": rt,
+                "score": score,
+                "charge_state": z,
+                "mono_mz": mono_mz,
+                "raw_ms_fine_structure":m_z
+                
+            }]
+        else:
+            hx_data.peptides[protein][state][peptide_name][str(row["Exposure"])].append({
+                "uptake": float(row["Uptake"]),
+                "start": int(row['Start']),
+                "end": int(row['Stop']),
+                "PTM": modification,
+                "time": float(row["Exposure"]),
+                "mod": str(row["Bimodal_group"]) if str(row["Bimodal_group"]) != "" else "A",
+                "envelope": envelope,
+                "replicate": replicate,
+                "match": m_z,
+                "RT": rt,
+                "score": score,
+                "charge_state": z,
+                "mono_mz": mono_mz,
+                "raw_ms_fine_structure":m_z
+            })
+
     return hx_data
-
-
-
 
 
 def _parse_dynamX(file_path: str, flags_info: None) -> HxmsData:
@@ -482,7 +526,8 @@ def _parse_dynamX(file_path: str, flags_info: None) -> HxmsData:
         protein = str(row['Protein'])
         state = str(row['State'])
         modification = str(row["Modification"]) if pd.notna(row["Modification"]) else "N/A"
-        peptide_name = f"{row['Start']}-{row['Sequence']}-{modification}-{row['End']}-0"
+        modification = modification.replace("-", "_")
+        peptide_name = f"{row['Start']}~{row['Sequence']}~{modification}~{row['End']}~0"
         if protein not in hx_data.proteins:
             hx_data.proteins.append(protein)
             hx_data.state[protein] = []
@@ -493,67 +538,31 @@ def _parse_dynamX(file_path: str, flags_info: None) -> HxmsData:
         if peptide_name not in hx_data.peptides[protein][state]:
             hx_data.peptides[protein][state][peptide_name] = {}
 
-        hx_data.peptides[protein][state][peptide_name][str(row["Exposure"])] = {
-            "uptake": float(row["Uptake"]),
-            "start": int(row['Start']),
-            "end": int(row['End']),
-            "sequence": str(row['Sequence']),
-            "PTM": modification,
-            "time": float(row["Exposure"]),
-            "mod": "A",
-            "envelope": "",
-            "replicate": 0
-        }
+        if str(row["Exposure"]) not in  hx_data.peptides[protein][state][peptide_name]:
+            hx_data.peptides[protein][state][peptide_name][str(row["Exposure"])] = [{
+                "uptake": float(row["Uptake"]),
+                "start": int(row['Start']),
+                "end": int(row['End']),
+                "sequence": str(row['Sequence']),
+                "PTM": modification,
+                "time": float(row["Exposure"]),
+                "mod": "A",
+                "envelope": "",
+                "replicate": 0
+            }]
+        else:
+            hx_data.peptides[protein][state][peptide_name][str(row["Exposure"])].append({
+                "uptake": float(row["Uptake"]),
+                "start": int(row['Start']),
+                "end": int(row['End']),
+                "sequence": str(row['Sequence']),
+                "PTM": modification,
+                "time": float(row["Exposure"]),
+                "mod": "A",
+                "envelope": "",
+                "replicate": 0
+            })
     return hx_data
-
-
-def _parse_byos(file_path: str, flags_info: None) -> HxmsData:
-    """
-    Parses a Byos CSV file into a HxmsData object.
-    """
-    hx_data = HxmsData()
-    if not os.path.exists(file_path) or not os.path.isfile(file_path):
-        return None
-    byos_headers = ['Condition', 'StartAA', 'EndAA', 'Sequence(unformatted)', 'Calc.M', 'Apex Time(Posit)',
-                    'ExchangeTime', 'Replicate', '% deuteration']
-    try:
-        byos_df = pd.read_csv(file_path)
-    except Exception as e:
-        print(f"Error reading file: {e}")
-        return None
-    for header in byos_headers:
-        if header not in byos_df.columns:
-            return None
-    for _, row in byos_df.iterrows():
-        protein = "blank"
-        state = str(row['Condition'])
-        modification = "N/A"
-        replicate = int(row["Replicate"]) - 1
-        peptide_name = f"{row['StartAA']}-{row['Sequence(unformatted)']}-{modification}-{row['EndAA']}-0"
-        if " - " in str(row["% deuteration"]) or pd.isna(row["% deuteration"]):
-            continue
-        if protein not in hx_data.proteins:
-            hx_data.proteins.append(protein)
-            hx_data.state[protein] = []
-            hx_data.peptides[protein] = {}
-        if state not in hx_data.state[protein]:
-            hx_data.state[protein].append(state)
-            hx_data.peptides[protein][state] = {}
-        if peptide_name not in hx_data.peptides[protein][state]:
-            hx_data.peptides[protein][state][peptide_name] = {}
-        hx_data.peptides[protein][state][peptide_name][str(row["ExchangeTime"])] = {
-            "uptake": float(row["% deuteration"]) * (int(row['EndAA']) - int(row['StartAA']) + 1),
-            "start": int(row['StartAA']),
-            "end": int(row['EndAA']),
-            "sequence": str(row['Sequence(unformatted)']),
-            "PTM": modification,
-            "time": float(row["ExchangeTime"]),
-            "mod": "A",
-            "envelope": "",
-            "replicate": replicate
-        }
-    return hx_data
-
 
 def _parse_biopharma(file_path: str, flags_info: None) -> HxmsData:
     """
@@ -562,44 +571,157 @@ def _parse_biopharma(file_path: str, flags_info: None) -> HxmsData:
     hx_data = HxmsData()
     if not os.path.exists(file_path) or not os.path.isfile(file_path):
         return None
-    biopharam_headers = ["Protein", "Start", "End", "Sequence", "Modification", "Fragment", "MaxUptake", "MHP", "State",
-                         "Exposure", "Center", "Center SD", "Uptake", "Uptake SD", "RT", "RT SD"]
+    biopharam_headers = ["Retention Time", "Peptide", "Charge", "Residue From", "Residue To", "Ref", "0% Control",
+                         "100% Control", "stdev"]
     try:
-        biopharma_df = pd.read_csv(file_path)
+        biopharma_df = pd.read_csv(file_path, skiprows=1)
     except Exception as e:
         print(f"Error reading file: {e}")
         return None
     for header in biopharam_headers:
         if header not in biopharma_df.columns:
             return None
-    for _, row in biopharma_df.iterrows():
-        protein = str(row['Protein'])
-        state = str(row['State'])
-        modification = str(row["Modification"]) if pd.notna(row["Modification"]) else "N/A"
-        peptide_name = f"{row['Start']}-{row['Sequence']}-{modification}-{row['End']}-0"
+    time_points = []
+    states = {}
+    tp = {}
+    all_indexes = []
+    with open(file_path, 'r', newline='', encoding='utf-8') as file:
+        for index, line in enumerate(file):
+            if index == 0:
+                line=line.replace("\n","").replace("\r","")
+                parts = line.replace("\n", "").split(",")[1:]
+                for sub_index,item in enumerate(parts):
+                    if item == "":
+                        continue
+                    else:
+                        if sub_index+1 not in states:
 
-        if protein not in hx_data.proteins:
-            hx_data.proteins.append(protein)
-            hx_data.state[protein] = []
-            hx_data.peptides[protein] = {}
+                            states[sub_index+1] = item
+                        all_indexes.append(sub_index+1)
+            elif index == 1:
+                line=line.replace("\n","").replace("\r","")
+                parts = line.replace("\n", "").split(",")
+                for sub_index,item in enumerate(parts):
+
+                    if item == "":
+                        continue
+                    failed = []
+                    if sub_index in all_indexes:
+                        try:
+                            if states[sub_index] not in tp:
+                                tp[states[sub_index]] = {}
+                            tp[states[sub_index]][sub_index]=(float(item))
+                        except:
+                            failed.append(sub_index)
+                            pass
+
+                    for x in failed:
+                        all_indexes.remove(x)
+            else:
+                break
+    try:
+        hdx_df = pd.read_csv(file_path, skiprows=1)
+    except Exception as e:
+        print(f"Error reading file: {e}")
+        return None
+
+    hdx_df.columns = hdx_df.columns.str.strip()
+    protein = "protein"
+    if protein not in hx_data.proteins:
+        hx_data.proteins.append(protein)
+        hx_data.state[protein] = []
+        hx_data.peptides[protein] = {}
+
+    for key in states:
+        state = states[key]
         if state not in hx_data.state[protein]:
             hx_data.state[protein].append(state)
             hx_data.peptides[protein][state] = {}
-        if peptide_name not in hx_data.peptides[protein][state]:
-            hx_data.peptides[protein][state][peptide_name] = {}
+    for _, row in hdx_df.iterrows():
+        peptide = str(row['Peptide']).strip().split(" = ")[0].replace("-","_")
+        try:
+            start = int(row['Residue From'])
+        except:
+            continue
+        end = int(row['Residue To'])
+        modification = "N/A"
+        modification = modification.replace("-", "_")
+        peptide_name = f"{start}~{peptide}~{modification}~{end}~0"
 
-        hx_data.peptides[protein][state][peptide_name][str(row["Exposure"])] = {
-            "uptake": float(row["Uptake"]),
-            "start": int(row['Start']),
-            "end": int(row['End']),
-            "sequence": str(row['Sequence']),
-            "PTM": modification,
-            "time": float(row["Exposure"]),
-            "mod": "A",
-            "envelope": "",
-            "replicate": 0
-        }
+
+        if pd.notna(row["100% Control"]):
+            if pd.notna(row["0% Control"]):
+                full_d = (float(row["100% Control"]) - float(row["0% Control"])) * float(row["Charge"])
+                for key in tp:
+                    if peptide_name not in hx_data.peptides[protein][key]:
+                        hx_data.peptides[protein][key][peptide_name] = {}
+                    hx_data.peptides[protein][key][peptide_name]["inf"] = {
+                        "uptake": full_d,
+                        "start": start,
+                        "end": end,
+                        "sequence": peptide,
+                        "time": float('inf'),
+                        "envelope": "",
+                        "PTM": modification,
+                        "mod": "A",
+                        # "replicate": used_rep[time_point_str]-1,
+                        "replicate": 0
+                    }
+
+        for i, d_col in enumerate(all_indexes):
+            if pd.notna(row.iloc[d_col]):
+
+                time_point = str(tp[states[d_col]][d_col])
+                #time_point = float(time_point_str) if time_point_str != "inf" else float('inf')
+                uptake = float(row.iloc[d_col])
+
+                if peptide_name not in hx_data.peptides[protein][states[d_col]]:
+                    hx_data.peptides[protein][states[d_col]][peptide_name] = {}
+                if "0.0" not in hx_data.peptides[protein][states[d_col]][peptide_name]:
+                    hx_data.peptides[protein][states[d_col]][peptide_name]["0.0"] = [{
+                        "uptake": 0,
+                        "start": start,
+                        "end": end,
+                        "sequence": peptide,
+                        "time": 0.0,
+                        "envelope": "",
+                        "PTM": modification,
+                        "mod": "A",
+                        # "replicate": used_rep[time_point_str]-1,
+                        "replicate": 0
+                    }]
+
+                if time_point not in hx_data.peptides[protein][states[d_col]][peptide_name]:
+                    hx_data.peptides[protein][states[d_col]][peptide_name][time_point] = [{
+                        "uptake": uptake,
+                        "start": start,
+                        "end": end,
+                        "sequence": peptide,
+                        "time": time_point,
+                        "envelope": "",
+                        "PTM": modification,
+                        "mod": "A",
+                        # "replicate": used_rep[time_point_str]-1,
+                        "replicate": 0
+                    }]
+                else:
+
+                    hx_data.peptides[protein][states[d_col]][peptide_name][time_point].append({
+                        "uptake": uptake,
+                        "start": start,
+                        "end": end,
+                        "sequence": peptide,
+                        "time": time_point,
+                        "PTM": modification,
+                        "envelope": "",
+                        "mod": "A",
+                        # "replicate": used_rep[time_point_str]-1,
+                        "replicate": 0
+                    })
     return hx_data
+
+
+
 
 def validate_and_parse_hxms_file(hxms_file_path:str)->[bool,str,HxmsData, dict]:
     if not os.path.exists(hxms_file_path):
@@ -609,10 +731,13 @@ def validate_and_parse_hxms_file(hxms_file_path:str)->[bool,str,HxmsData, dict]:
     header_info = {}
     tp_info = {}
     ptm_info = {}
+    match_info = {}
     skip_lines_TP = 0
     skip_lines_TP_done = False
     skip_lines_PTM = 0
     skip_lines_PTM_done = False
+    skip_lines_MATCH = 0
+    skip_lines_MATCH_done = False
     with open(hxms_file_path,"r") as hxms_file:
         for line in hxms_file:
             if "TITLE_TP" in line:
@@ -637,25 +762,39 @@ def validate_and_parse_hxms_file(hxms_file_path:str)->[bool,str,HxmsData, dict]:
                         envelope = ""
                         if len(data) == 10:
                             envelope = data[9]
+                        if data[2]+"~"+data[3]+"~"+data[4]+"~"+data[5]+"~"+data[7] not in tp_info:
+                            tp_info[data[2]+"~"+data[3]+"~"+data[4]+"~"+data[5]+"~"+data[7]] = [{
 
-                        tp_info[data[2]+"-"+data[3]+"-"+data[4]+"-"+data[5]+"-"+data[7]] ={
+                                "INDEX":int(data[1]),
+                                "MOD": data[2],
+                                "START": int(data[3]),
+                                "END": int(data[4]),
+                                "REP": int(data[5]),
+                                "PTM_ID": int(data[6]),
+                                "TIME(Sec)": float(data[7]),
+                                "UPTAKE": float(data[8]),
+                                "ENVELOPE": envelope,
 
-                            "INDEX":int(data[1]),
-                            "MOD": data[2],
-                            "START": int(data[3]),
-                            "END": int(data[4]),
-                            "REP": int(data[5]),
-                            "PTM_ID": int(data[6]),
-                            "TIME(Sec)": float(data[7]),
-                            "UPTAKE": float(data[8]),
-                            "ENVELOPE": envelope,
+                            }]
+                        else:
+                            tp_info[data[2] + "~" + data[3] + "~" + data[4] + "~" + data[5] + "~" + data[7]].append({
 
-                        }
+                                "INDEX":int(data[1]),
+                                "MOD": data[2],
+                                "START": int(data[3]),
+                                "END": int(data[4]),
+                                "REP": int(data[5]),
+                                "PTM_ID": int(data[6]),
+                                "TIME(Sec)": float(data[7]),
+                                "UPTAKE": float(data[8]),
+                                "ENVELOPE": envelope,
+
+                            })
                     except:
                         return [False, f"Incorrect TP info for {line}", None]
 
             if "TITLE_PTM" in line:
-                if "TITLE_PTM  PTM_ID  CONTENT" not in line:
+                if "TITLE_PTM   PTM_ID  CONTENT" not in line:
                     return [False,"invalid PTM header",None, None]
                 skip_lines_PTM_done = True
             elif not skip_lines_PTM_done:
@@ -666,7 +805,37 @@ def validate_and_parse_hxms_file(hxms_file_path:str)->[bool,str,HxmsData, dict]:
                     try:
                         ptm_info[int(data[1])] = data[2]
                     except:
-                        return [False, f"Incorrect TP info for {line}", None, None]
+                        return [False, f"Incorrect PTM info for {line}", None, None]
+            
+            if "TITLE_MATCH" in line:
+                if "TITLE_MATCH TP_ID" not in line:
+                    return [False,"invalid MATCH header",None, None]
+                skip_lines_MATCH_done = True
+            elif not skip_lines_MATCH_done:
+                skip_lines_MATCH+=1
+            elif skip_lines_MATCH_done:
+                data = [data.replace("\n", "") for data in line.split(" ") if data.replace("\n", "") != ""]
+                if "MATCH" == data[0]:
+                    try:
+                        match_content = line.split(None, 5)
+                        print(match_content)
+                        if len(match_content) >= 5:
+                            tp_id = int(match_content[1])
+                            score_val = match_content[2]
+                            rt_val = match_content[3]
+                            charge_val = match_content[4]
+                            mono_mz_val = match_content[5].split(None, 1)[0] if len(match_content[5].split(None, 1)) > 0 else ""
+                            match_data = match_content[5].split(None, 1)[1].strip() if len(match_content[5].split(None, 1)) > 1 else ""
+                            
+                            match_info[tp_id] = {
+                                "RT": rt_val,
+                                "score": score_val,
+                                "charge_state": charge_val,
+                                "mono_mz": mono_mz_val,
+                                "match": match_data
+                            }
+                    except:
+                        pass
 
     if "PROTEIN_SEQUENCE" not in header_info:
         return [False,"PROTEIN_SEQUENCE not in header",None, None]
@@ -745,24 +914,35 @@ def validate_and_parse_hxms_file(hxms_file_path:str)->[bool,str,HxmsData, dict]:
         hx_data.state[protein].append(state)
         hx_data.peptides[protein][state] = {}
 
-    for tp in tp_info:
-        try:
-            tp = tp_info[tp]
-            peptide_name = f"{tp['START']}-N/A-{tp['PTM_ID']}-{tp['END']}"
-            if peptide_name not in hx_data.peptides[protein][state]:
-                hx_data.peptides[protein][state][peptide_name] = {}
-            if str(tp['TIME(Sec)']) not in hx_data.peptides[protein][state][peptide_name]:
-                hx_data.peptides[protein][state][peptide_name][str(tp['TIME(Sec)'])] = []
-            hx_data.peptides[protein][state][peptide_name][str(tp['TIME(Sec)'])].append({
-                "uptake": tp['UPTAKE'],
-                "start": tp['START'],
-                "end": tp['END'],
-                "PTM": ptm_info[tp['PTM_ID']],
-                "time": tp["TIME(Sec)"],
-                "mod": tp["MOD"],
-                "envelope": tp["ENVELOPE"],
-                "replicate": tp["REP"]
-            })
-        except:
-            return [False, "TP could not be read or converted properly", None]
+    for tp_key in tp_info:
+        for tp in tp_info[tp_key]:
+            try:
+                ptm_name = ptm_info.get(tp['PTM_ID'], 'nan')
+                peptide_name = f"{tp['START']}~N/A~{ptm_name}~{tp['END']}"
+                if peptide_name not in hx_data.peptides[protein][state]:
+                    hx_data.peptides[protein][state][peptide_name] = {}
+                if str(tp['TIME(Sec)']) not in hx_data.peptides[protein][state][peptide_name]:
+                    hx_data.peptides[protein][state][peptide_name][str(tp['TIME(Sec)'])] = []
+                
+                tp_data = {
+                    "uptake": tp['UPTAKE'],
+                    "start": tp['START'],
+                    "end": tp['END'],
+                    "PTM": ptm_name,
+                    "time": tp["TIME(Sec)"],
+                    "mod": tp["MOD"],
+                    "envelope": tp["ENVELOPE"],
+                    "replicate": tp["REP"]
+                }
+                
+                if tp['INDEX'] in match_info:
+                    tp_data["RT"] = match_info[tp['INDEX']]["RT"]
+                    tp_data["charge_state"] = match_info[tp['INDEX']]["charge_state"]
+                    tp_data["mono_mz"] = match_info[tp['INDEX']]["mono_mz"]
+                    tp_data["match"] = match_info[tp['INDEX']]["match"]
+                    tp_data["score"] = match_info[tp['INDEX']]["score"]
+                
+                hx_data.peptides[protein][state][peptide_name][str(tp['TIME(Sec)'])].append(tp_data)
+            except:
+                return [False, "TP could not be read or converted properly", None]
     return [True,"",hx_data,ptm_info]
